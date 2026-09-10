@@ -5,12 +5,29 @@ import helmet from 'helmet';
 import { StatusCodes } from 'http-status-codes';
 import { checkoutRoutes } from './routes/checkoutRoutes.js';
 import { idempotencyMiddleware } from './middleware/idempotency.js';
+import { eventRoutes } from './routes/eventRoutes.js';
 
+// Add to your API routes section
 const app: Application = express();
 
 // Security and utility middlewares
+app.use('/api/v1/events', eventRoutes);
 app.use(helmet());
-app.use(cors());
+app.use((req: Request, res: Response, next: NextFunction): void => {
+  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Idempotency-Key');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  // Handle preflight OPTIONS requests immediately
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(StatusCodes.OK);
+    return;
+  }
+
+  next();
+});
+
 app.use(express.json());
 app.use('/api/v1/checkout', idempotencyMiddleware, checkoutRoutes);
 // API Routes
