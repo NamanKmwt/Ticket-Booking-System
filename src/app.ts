@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { StatusCodes } from 'http-status-codes';
 import { checkoutRoutes } from './routes/checkoutRoutes.js';
+import { idempotencyMiddleware } from './middleware/idempotency.js';
 
 const app: Application = express();
 
@@ -11,7 +12,7 @@ const app: Application = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
-
+app.use('/api/v1/checkout', idempotencyMiddleware, checkoutRoutes);
 // API Routes
 app.use('/api/v1/checkout', checkoutRoutes);
 
