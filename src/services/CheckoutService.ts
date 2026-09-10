@@ -4,7 +4,8 @@ import { SeatCacheService, type CachedSeat } from './SeatCacheService.js';
 import { Seat } from '../models/Seat.js';
 import { SeatStatus, OrderStatus } from '../models/types.js';
 import { Order } from '../models/Order.js';
-import { redisClient } from '../config/redis.js'; // <-- Import redisClient directly
+import { redisClient } from '../config/redis.js';
+import { OrderPublisher } from './OrderPublisher.js'; // <-- Import the publisher
 import { Types } from 'mongoose';
 
 interface HoldSeatsRequest {
@@ -22,9 +23,6 @@ interface HoldSeatsResponse {
 }
 
 export class CheckoutService {
-  /**
-   * Attempts to temporarily hold multiple seats for a user using atomic Redis locks.
-   */
   static async holdSeats(request: HoldSeatsRequest): Promise<HoldSeatsResponse> {
     const { eventId, seatIds, userEmail } = request;
     const acquiredLocks: { seatId: string; token: string }[] = [];
@@ -32,8 +30,7 @@ export class CheckoutService {
     try {
       // Step 1: Try to acquire atomic locks for ALL requested seats
       for (const seatId of seatIds) {
-        // 10 minute TTL (600,000 ms)
-        const token = await LockService.acquireSeatLock(seatId, 600000);
+        const token = await LockService.acquireSeatLock(seatId, 600000); // 10 min TTL
         
         if (!token) {
           await this.rollbackLocks(acquiredLocks);
@@ -85,7 +82,6 @@ export class CheckoutService {
         { $set: { status: SeatStatus.HELD } }
       );
 
-      // Update Redis cache entries
       const redisKey = `event:${eventId}:seats`;
       const updates: Record<string, string> = {};
       for (const seatId of seatIds) {
@@ -96,12 +92,22 @@ export class CheckoutService {
         }
       }
       if (Object.keys(updates).length > 0) {
-        await redisClient.hset(redisKey, updates); // <-- Clean and typed call
+        await redisClient.hset(redisKey, updates);
       }
+
+      // Step 5: Publish event to CloudAMQP for asynchronous payment processing
+      await OrderPublisher.publishOrder({
+        orderId: order._id.toString(),
+        eventId,
+        seatIds,
+        userEmail,
+        totalAmount,
+        lockTokens: acquiredLocks,
+      });
 
       return {
         success: true,
-        message: 'Seats successfully held for 10 minutes. Proceed to payment.',
+        message: 'Seats held successfully. Processing order via message queue.',
         orderId: order._id.toString(),
         lockedSeatIds: seatIds,
       };
@@ -113,9 +119,6 @@ export class CheckoutService {
     }
   }
 
-  /**
-   * Helper to release all acquired locks if a multi-seat transaction fails halfway through.
-   */
   private static async rollbackLocks(locks: { seatId: string; token: string }[]): Promise<void> {
     for (const lock of locks) {
       await LockService.releaseSeatLock(lock.seatId, lock.token);
